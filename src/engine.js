@@ -1,5 +1,8 @@
 const { SISTEMA, SIGLAS, TEMPO_LINHA, TEMPO_BALDEACAO } = require('../data/sistema');
 
+// ==========================================
+// CACHE E UTILITÁRIOS
+// ==========================================
 const _cacheLinhas = {};
 function linhasDaEstacao(nome) {
   if (_cacheLinhas[nome]) return _cacheLinhas[nome];
@@ -19,7 +22,10 @@ function encontrarEstacao(termo) {
   if (sigla) return sigla;
   const busca = norm(termo);
   if (busca.length < 2) return null;
-  return TODAS_ESTACOES.find(e => norm(e).includes(busca)) || null;
+  // Busca exata primeiro, depois parcial
+  return TODAS_ESTACOES.find(e => norm(e) === busca)
+      || TODAS_ESTACOES.find(e => norm(e).includes(busca))
+      || null;
 }
 
 function buscarSugestoes(termo, limite = 8) {
@@ -36,6 +42,56 @@ function buscarSugestoes(termo, limite = 8) {
   return result.slice(0, limite);
 }
 
+// ==========================================
+// FILA DE PRIORIDADE (MIN-HEAP)
+// Substitui o popMin anterior que era O(n)
+// ==========================================
+class MinHeap {
+  constructor() { this.heap = []; }
+
+  push(item) {
+    this.heap.push(item);
+    this._bubbleUp(this.heap.length - 1);
+  }
+
+  pop() {
+    const top = this.heap[0];
+    const last = this.heap.pop();
+    if (this.heap.length > 0) {
+      this.heap[0] = last;
+      this._sinkDown(0);
+    }
+    return top;
+  }
+
+  get size() { return this.heap.length; }
+
+  _bubbleUp(i) {
+    while (i > 0) {
+      const parent = Math.floor((i - 1) / 2);
+      if (this.heap[parent][0] <= this.heap[i][0]) break;
+      [this.heap[parent], this.heap[i]] = [this.heap[i], this.heap[parent]];
+      i = parent;
+    }
+  }
+
+  _sinkDown(i) {
+    const n = this.heap.length;
+    while (true) {
+      let min = i;
+      const l = 2 * i + 1, r = 2 * i + 2;
+      if (l < n && this.heap[l][0] < this.heap[min][0]) min = l;
+      if (r < n && this.heap[r][0] < this.heap[min][0]) min = r;
+      if (min === i) break;
+      [this.heap[min], this.heap[i]] = [this.heap[i], this.heap[min]];
+      i = min;
+    }
+  }
+}
+
+// ==========================================
+// BFS — rota por menor número de estações
+// ==========================================
 function bfs(origem, destino) {
   const linhasIniciais = linhasDaEstacao(origem);
   if (!linhasIniciais.length) return null;
@@ -70,29 +126,33 @@ function bfs(origem, destino) {
   return null;
 }
 
+// ==========================================
+// DIJKSTRA — rota por menor tempo real
+// Usa MinHeap para performance O(E log V)
+// Penalidade de baldeação já usa TEMPO_BALDEACAO
+// ==========================================
 function dijkstra(origem, destino) {
   const dist = {};
   const prev = {};
-  const fila = [];
+  const heap = new MinHeap();
 
   for (const linha of linhasDaEstacao(origem)) {
     const k = `${origem}|${linha}`;
     dist[k] = 0;
-    fila.push([0, origem, linha]);
+    heap.push([0, origem, linha]);
   }
 
-  const popMin = () => {
-    let best = 0;
-    for (let i = 1; i < fila.length; i++) if (fila[i][0] < fila[best][0]) best = i;
-    return fila.splice(best, 1)[0];
-  };
-
-  while (fila.length) {
-    const [custo, estacao, linha] = popMin();
+  while (heap.size > 0) {
+    const [custo, estacao, linha] = heap.pop();
     const k = `${estacao}|${linha}`;
-    if (estacao === destino) return { path: _reconstruir(prev, k), tempo: Math.round(custo) };
+
+    if (estacao === destino) {
+      return { path: _reconstruir(prev, k), tempo: Math.round(custo) };
+    }
+
     if (dist[k] !== undefined && custo > dist[k]) continue;
 
+    // Vizinhos na mesma linha
     const lista = SISTEMA[linha].estacoes;
     const idx = lista.indexOf(estacao);
     for (const delta of [-1, 1]) {
@@ -101,23 +161,30 @@ function dijkstra(origem, destino) {
       const nc = custo + TEMPO_LINHA[linha];
       const nk = `${viz}|${linha}`;
       if (dist[nk] === undefined || nc < dist[nk]) {
-        dist[nk] = nc; prev[nk] = k;
-        fila.push([nc, viz, linha]);
+        dist[nk] = nc;
+        prev[nk] = k;
+        heap.push([nc, viz, linha]);
       }
     }
+
+    // Baldeação para outra linha
     for (const outra of linhasDaEstacao(estacao)) {
       if (outra === linha) continue;
       const nc = custo + TEMPO_BALDEACAO;
       const nk = `${estacao}|${outra}`;
       if (dist[nk] === undefined || nc < dist[nk]) {
-        dist[nk] = nc; prev[nk] = k;
-        fila.push([nc, estacao, outra]);
+        dist[nk] = nc;
+        prev[nk] = k;
+        heap.push([nc, estacao, outra]);
       }
     }
   }
   return null;
 }
 
+// ==========================================
+// FUNÇÕES AUXILIARES
+// ==========================================
 function _reconstruir(prev, fim) {
   const path = [];
   let cur = fim;
@@ -132,7 +199,9 @@ function _reconstruir(prev, fim) {
 function calcularTempo(path) {
   let t = 0;
   for (let i = 1; i < path.length; i++) {
-    t += path[i].linha !== path[i - 1].linha ? TEMPO_BALDEACAO : TEMPO_LINHA[path[i].linha];
+    t += path[i].linha !== path[i - 1].linha
+      ? TEMPO_BALDEACAO
+      : TEMPO_LINHA[path[i].linha];
   }
   return Math.round(t);
 }

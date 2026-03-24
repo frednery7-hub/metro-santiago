@@ -24,7 +24,7 @@ function header() {
   console.log('');
   console.log(C.bold + C.cyan +
     '  ╔══════════════════════════════════════════╗\n' +
-    '  ║   🚇  Metro Santiago Navigator v2.0     ║\n' +
+    '  ║   🚇  Metro Santiago Navigator v2.1     ║\n' +
     '  ╚══════════════════════════════════════════╝' + C.reset);
   const agora = new Date();
   const hora = agora.toLocaleTimeString('es-CL', { hour:'2-digit', minute:'2-digit' });
@@ -39,24 +39,28 @@ function header() {
 
 function sep(char='─', len=46) { return C.gray + '  ' + char.repeat(len) + C.reset; }
 
-function imprimirRota(path, modo) {
-  const tempo = calcularTempo(path);
+// ── MUDANÇA 1: recebe tempo já calculado pelo Dijkstra ──
+function imprimirRota(path, modo, tempoPreCalc) {
+  const tempo = tempoPreCalc ?? calcularTempo(path);
   const paradas = paradasUnicas(path);
   const bals = detectarBaldeacoes(path);
   const segs = agruparSegmentos(path);
 
   console.log('\n' + sep('═'));
-  console.log(C.bold + '  ROTA CALCULADA' + C.reset + C.gray + `  [${modo==='rapida'?'tempo mínimo':'menos paradas'}]` + C.reset);
+  console.log(C.bold + '  ROTA CALCULADA' + C.reset +
+    C.gray + `  [${modo === 'rapida' ? '⚡ tempo mínimo' : '🛑 menos paradas'}]` + C.reset);
   console.log(sep('═') + '\n');
-  console.log(C.bold + C.yellow + `  ⏱  ${tempo} min` + C.reset + C.gray + '  ·  ' + C.reset +
-    C.bold + `${paradas.length-1} paradas` + C.reset + C.gray + '  ·  ' + C.reset +
+  console.log(C.bold + C.yellow + `  ⏱  ${tempo} min` + C.reset +
+    C.gray + '  ·  ' + C.reset +
+    C.bold + `${paradas.length - 1} paradas` + C.reset +
+    C.gray + '  ·  ' + C.reset +
     C.bold + `${bals.length} baldeação(ões)` + C.reset);
   console.log('\n' + sep() + '\n');
 
   segs.forEach((seg, si) => {
     const cl = COR_LINHA[seg.linha] || '';
-    const terminal = terminalDirecao(seg.linha, seg.estacoes[0], seg.estacoes[seg.estacoes.length-1]);
-    const prefixo = si===0 ? '📍' : '🔄';
+    const terminal = terminalDirecao(seg.linha, seg.estacoes[0], seg.estacoes[seg.estacoes.length - 1]);
+    const prefixo = si === 0 ? '📍' : '🔄';
 
     console.log(`  ${prefixo} ${C.bold}${seg.estacoes[0]}${C.reset}`);
     console.log(C.gray + '  │' + C.reset + cl + C.bold + ` [${seg.linha}]` + C.reset +
@@ -67,22 +71,24 @@ function imprimirRota(path, modo) {
     });
 
     if (seg.estacoes.length > 1) {
-      const ultimo = seg.estacoes[seg.estacoes.length-1];
-      const isDestino = si === segs.length-1;
+      const ultimo = seg.estacoes[seg.estacoes.length - 1];
+      const isDestino = si === segs.length - 1;
       if (isDestino) console.log(`  🏁 ${C.bold}${C.green}${ultimo}${C.reset}`);
       else console.log(`  ${C.gray}└─${C.reset} ${ultimo}`);
     }
 
-    if (si < segs.length-1) {
-      const proxLinha = segs[si+1].linha;
+    if (si < segs.length - 1) {
+      const proxLinha = segs[si + 1].linha;
       const clProx = COR_LINHA[proxLinha] || '';
       console.log('\n' + C.yellow + '  ⇄  BALDEAÇÃO' + C.reset +
-        C.gray + ` em ${seg.estacoes[seg.estacoes.length-1]}  →  ` + C.reset +
-        clProx + C.bold + proxLinha + C.reset + C.gray + '  (~4 min)' + C.reset + '\n');
+        C.gray + ` em ${seg.estacoes[seg.estacoes.length - 1]}  →  ` + C.reset +
+        clProx + C.bold + proxLinha + C.reset +
+        C.gray + '  (~4 min)' + C.reset + '\n');
     }
   });
 
   const estacoesNaRota = [...new Set(path.map(n => n.estacao))];
+
   const alertas = estacoesNaRota.filter(e => ALERTAS[e]);
   if (alertas.length) {
     console.log('\n' + sep());
@@ -125,20 +131,31 @@ async function loop() {
       } else console.log(C.green + `  ✓ Destino: ${destino}` + C.reset);
     }
 
+    // ── MUDANÇA 2: Dijkstra agora é opção 1 (padrão) ──
     console.log('\n  Modo de rota:');
-    console.log(C.gray + '  [1] Menos paradas  (BFS)\n  [2] Tempo mínimo   (Dijkstra)' + C.reset + '\n');
-    const modo = (await ask('  Escolha [1/2, Enter=1]: ')).trim() === '2' ? 'rapida' : 'paradas';
+    console.log(
+      C.gray + '  [1] ⚡ Tempo mínimo   (Dijkstra)\n' +
+               '  [2] 🛑 Menos paradas  (BFS)' + C.reset + '\n'
+    );
+    const escolha = (await ask('  Escolha [1/2, Enter=1]: ')).trim();
+    const modo = escolha === '2' ? 'paradas' : 'rapida';
 
-    let path;
+    let path = null;
+    let tempoPreCalc = null;
+
     if (modo === 'rapida') {
       const r = dijkstra(origem, destino);
       path = r?.path || null;
+      tempoPreCalc = r?.tempo || null;  // usa o tempo já calculado pelo Dijkstra
     } else {
       path = bfs(origem, destino);
     }
 
-    if (!path) console.log(C.red + '\n  ✗ Rota não encontrada.\n' + C.reset);
-    else imprimirRota(path, modo);
+    if (!path) {
+      console.log(C.red + '\n  ✗ Rota não encontrada.\n' + C.reset);
+    } else {
+      imprimirRota(path, modo, tempoPreCalc);
+    }
 
     const cont = await ask('  Nova busca? [S/n]: ');
     if (cont.trim().toLowerCase() === 'n') {
