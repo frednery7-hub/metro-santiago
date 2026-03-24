@@ -1,6 +1,39 @@
 const { SISTEMA, SIGLAS, TEMPO_LINHA, TEMPO_BALDEACAO } = require('../data/sistema');
 
 // ==========================================
+// TEMPO REAL DE TRANSBORDO POR ESTAÇÃO
+// Baseado na distância real entre plataformas
+// ==========================================
+const TEMPO_TRANSBORDO = {
+  'Los Heroes':                     6,  // L1↔L2: corredor longo ~6 min
+  'Puente Cal y Canto':             7,  // L2↔L3: percurso interno ~7 min
+  'Universidad de Chile':           5,  // L1↔L3: mezanino central ~5 min
+  'Baquedano':                      4,  // L1↔L5: mesma plataforma ~4 min
+  'San Pablo':                      3,  // L1↔L5: plataformas próximas ~3 min
+  'Tobalaba':                       4,  // L1↔L4: ~4 min
+  'Los Leones':                     3,  // L1↔L6: ~3 min
+  'Santa Ana':                      4,  // L2↔L5: ~4 min
+  'Franklin':                       3,  // L2↔L6: ~3 min
+  'Bio Bio':                        3,  // L2↔L6: ~3 min
+  'Lo Valledor':                    3,  // L2↔L6: ~3 min
+  'Presidente Pedro Aguirre Cerda': 5,  // L2↔L6: ~5 min
+  'La Cisterna':                    4,  // L2↔L4A: ~4 min
+  'San Ramon':                      4,  // L2↔L4A: ~4 min
+  'Plaza de Armas':                 5,  // L3↔L5: ~5 min
+  'Irarrazaval':                    4,  // L3↔L5: ~4 min
+  'Plaza Egana':                    4,  // L3↔L4: ~4 min
+  'Nunoa':                          3,  // L3↔L6: ~3 min
+  'Vicuna Mackenna':                4,  // L4↔L4A: ~4 min
+  'Vicente Valdes':                 3,  // L4↔L5: ~3 min
+  'Nuble':                          4,  // L5↔L6: ~4 min
+};
+
+// ==========================================
+// PENALIDADE DE HORÁRIO DE PICO
+// ==========================================
+const FATOR_PICO = 1.3;  // 30% mais lento no pico
+
+// ==========================================
 // CACHE E UTILITÁRIOS
 // ==========================================
 const _cacheLinhas = {};
@@ -22,7 +55,6 @@ function encontrarEstacao(termo) {
   if (sigla) return sigla;
   const busca = norm(termo);
   if (busca.length < 2) return null;
-  // Busca exata primeiro, depois parcial
   return TODAS_ESTACOES.find(e => norm(e) === busca)
       || TODAS_ESTACOES.find(e => norm(e).includes(busca))
       || null;
@@ -44,7 +76,6 @@ function buscarSugestoes(termo, limite = 8) {
 
 // ==========================================
 // FILA DE PRIORIDADE (MIN-HEAP)
-// Substitui o popMin anterior que era O(n)
 // ==========================================
 class MinHeap {
   constructor() { this.heap = []; }
@@ -128,10 +159,13 @@ function bfs(origem, destino) {
 
 // ==========================================
 // DIJKSTRA — rota por menor tempo real
-// Usa MinHeap para performance O(E log V)
-// Penalidade de baldeação já usa TEMPO_BALDEACAO
+// Usa tempo real de transbordo por estação
+// Aplica fator de pico quando necessário
 // ==========================================
-function dijkstra(origem, destino) {
+function dijkstra(origem, destino, usarPico = true) {
+  const periodo = periodoAtual();
+  const fatorTempo = (usarPico && periodo === 'pico') ? FATOR_PICO : 1.0;
+
   const dist = {};
   const prev = {};
   const heap = new MinHeap();
@@ -158,7 +192,7 @@ function dijkstra(origem, destino) {
     for (const delta of [-1, 1]) {
       const viz = lista[idx + delta];
       if (!viz) continue;
-      const nc = custo + TEMPO_LINHA[linha];
+      const nc = custo + (TEMPO_LINHA[linha] * fatorTempo);
       const nk = `${viz}|${linha}`;
       if (dist[nk] === undefined || nc < dist[nk]) {
         dist[nk] = nc;
@@ -167,10 +201,11 @@ function dijkstra(origem, destino) {
       }
     }
 
-    // Baldeação para outra linha
+    // Baldeação com tempo real por estação
     for (const outra of linhasDaEstacao(estacao)) {
       if (outra === linha) continue;
-      const nc = custo + TEMPO_BALDEACAO;
+      const tempoBaldeacao = TEMPO_TRANSBORDO[estacao] ?? TEMPO_BALDEACAO;
+      const nc = custo + (tempoBaldeacao * fatorTempo);
       const nk = `${estacao}|${outra}`;
       if (dist[nk] === undefined || nc < dist[nk]) {
         dist[nk] = nc;
@@ -197,11 +232,16 @@ function _reconstruir(prev, fim) {
 }
 
 function calcularTempo(path) {
+  const periodo = periodoAtual();
+  const fator = periodo === 'pico' ? FATOR_PICO : 1.0;
   let t = 0;
   for (let i = 1; i < path.length; i++) {
-    t += path[i].linha !== path[i - 1].linha
-      ? TEMPO_BALDEACAO
-      : TEMPO_LINHA[path[i].linha];
+    if (path[i].linha !== path[i - 1].linha) {
+      const tempoBaldeacao = TEMPO_TRANSBORDO[path[i].estacao] ?? TEMPO_BALDEACAO;
+      t += tempoBaldeacao * fator;
+    } else {
+      t += TEMPO_LINHA[path[i].linha] * fator;
+    }
   }
   return Math.round(t);
 }
@@ -214,7 +254,13 @@ function detectarBaldeacoes(path) {
   const bal = [];
   for (let i = 1; i < path.length; i++) {
     if (path[i].linha !== path[i-1].linha && path[i].estacao === path[i-1].estacao) {
-      bal.push({ estacao: path[i].estacao, de: path[i-1].linha, para: path[i].linha });
+      const tempo = TEMPO_TRANSBORDO[path[i].estacao] ?? TEMPO_BALDEACAO;
+      bal.push({
+        estacao: path[i].estacao,
+        de: path[i-1].linha,
+        para: path[i].linha,
+        tempo
+      });
     }
   }
   return bal;
@@ -251,5 +297,6 @@ function periodoAtual() {
 module.exports = {
   linhasDaEstacao, TODAS_ESTACOES, norm, encontrarEstacao, buscarSugestoes,
   bfs, dijkstra, calcularTempo, paradasUnicas, detectarBaldeacoes,
-  agruparSegmentos, terminalDirecao, periodoAtual
+  agruparSegmentos, terminalDirecao, periodoAtual,
+  TEMPO_TRANSBORDO, FATOR_PICO
 };
